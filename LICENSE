@@ -1,0 +1,143 @@
+# Kit de lancement — WP002 + CRP
+
+Trois livrables. Une séquence. Serrée.
+
+---
+
+## Séquence (recommandée)
+
+**T+0 (Jour 0, matin, ~10h)**
+Repo public sur GitHub. Le README est le point d'entrée — c'est ce que les
+gens verront en premier. Vérifier que `python3 cli.py verify` passe sur
+un clone propre avant de pousser.
+
+**T+0 (Jour 0, soir, ~19h)**
+Publier le thread X. Un lien vers le repo (`github.com/btcinfrahq/crp`).
+Un lien vers le paper sur Substack (`btcinfrahq.substack.com`).
+
+**T+1 (Jour 1)**
+Repost discret. Aucun commentaire ajouté.
+
+**T+3 (Jour 3)**
+Un seul tweet de suivi sur le test de falsifiabilité. Une capture d'écran.
+Pas de thread.
+
+**T+7 (Jour 7)**
+Si — et seulement si — il y a une traction qualitative (forks de devs,
+réponses sérieuses, un chercheur qui s'engage), publier un court billet
+Substack intitulé « Ce que WP002 met à l'épreuve ». Sinon : silence,
+et laisser l'artefact faire son travail.
+
+---
+
+## Thread X (5 tweets)
+
+Le thread reste en anglais — cohérence avec la stratégie X de
+@btcinfrahq et avec le paper.
+
+**1/**
+Bitcoin solved persistence.
+It did not solve execution.
+
+Identifiers persist.
+Meaning drifts.
+Execution breaks silently.
+
+**2/**
+Most systems solve routing.
+identifier → address.
+
+That is substitution.
+It is not resolution.
+
+**3/**
+Resolution is the stronger property:
+identifier → meaning → execution.
+
+We introduce the Closed Root Protocol — the minimal
+constraint that forces meaning to be reconstructible
+from state alone.
+
+**4/**
+Falsifiable in one command:
+
+  crp resolve root.aiagent.engine --state 3
+                       --break root.aiagent.identity
+
+Result: STATUS UNDEFINED. Exit code 1.
+
+If it returned anything else, the protocol would be broken.
+
+**5/**
+Working Paper N°002 — Semantic Resolution.
+Reference implementation, 250 lines, MIT.
+
+Paper: [lien Substack]
+Repo:  [lien GitHub]
+
+Execution without resolution is undefined.
+
+---
+
+## Paragraphe d'intro Substack (optionnel, en compagnon du PDF)
+
+> Le Working Paper N°001 défendait l'idée que l'identité peut survivre à
+> ses bâtisseurs. Le Working Paper N°002 prend l'étape suivante. Une
+> identité qui survit ne suffit pas — le sens doit survivre avec elle,
+> faute de quoi ce qui persiste n'est qu'une étiquette, pas un système.
+> Ce paper introduit le Closed Root Protocol (CRP), une contrainte
+> minimale qui force le sens à être reconstructible à partir du seul
+> état. Une implémentation de référence en ~250 lignes de Python est
+> publiée avec le paper, ainsi qu'un test de falsifiabilité en une seule
+> commande.
+
+---
+
+## Ce qu'il faut refuser de faire
+
+- Pas de thread « explicatif ». Pas de vulgarisation.
+- Pas d'engagement avec les hype/quote-tweets qui reframent ça en
+  token ou en produit.
+- Pas de WP003 prématuré. Un paper de calibration sans attention reçue
+  est de l'effort gaspillé.
+- Pas de cadrage « on construit une layer ». Le paper dit
+  explicitement que CRP est une contrainte, pas une VM. Rester sur
+  cette ligne.
+
+---
+
+## À quoi ressemble le succès à T+7
+
+- Repo : ≥ 50 étoiles, ≥ 2 forks, au moins 1 issue ou PR de quelqu'un
+  hors du cercle immédiat.
+- Thread : ≥ 1 quote-tweet d'une personne avec une crédibilité
+  technique (ingénieur protocole, chercheur, fonds infra sérieux).
+- Paper : ≥ 200 lectures uniques.
+
+Si rien de tout ça : l'idée est peut-être trop en avance, ou le
+cadrage demande à être retravaillé. Archiver, observer, revisiter
+dans 60 à 90 jours.
+
+---
+
+## À quoi ressemble le succès à T+30
+
+- Une implémentation indépendante, un fork, ou un write-up.
+- Une citation référencée dans un autre travail (article, paper,
+  thread).
+- Un DM d'une contrepartie sérieuse (fonds, lab, builder).
+
+C'est le vrai signal. Les étoiles et les likes sont du bruit.
+
+---
+
+## Vérifications avant push
+
+1. `python3 cli.py verify` → tous les invariants passent.
+2. `python3 cli.py resolve root.aiagent.engine --state 3` → output
+   propre avec ROOT HASH `163381f98ec8`.
+3. `python3 cli.py resolve root.aiagent.engine --state 3 --break root.aiagent.identity`
+   → STATUS UNDEFINED, exit code 1.
+4. README lisible sans scroll horizontal sur mobile.
+5. PDF du paper ouvert et relu une dernière fois.
+6. Liens Substack et GitHub testés (pas de 404).
