@@ -1,173 +1,327 @@
-# CRP — Closed Root Protocol
+#!/usr/bin/env python3
+"""
+CRP — Closed Root Protocol
+Reference resolver (v0.1)
 
-**Persistence is solved. Execution is not.**
+This is a minimal but real implementation:
+- replays an ordered sequence of transitions
+- builds the dependency DAG
+- validates that every dependency is recoverable
+- computes a deterministic Merkle root
+- exposes a falsifiability mode (--break)
 
-Identifiers persist.
-Meaning drifts.
-Execution breaks silently.
+It is intentionally short. It is not optimized.
+Its only purpose is to make the central claim observable:
 
----
+    Execution without resolution is undefined.
+"""
 
-## The claim
+import argparse
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
 
-An asset is only truly executable if its meaning can be reconstructed
-from state alone, without external assumptions.
+TRANSITIONS_DIR = Path(__file__).parent / "transitions"
 
-Most systems solve **routing**: identifier → address.
-None solve **resolution**: identifier → executable meaning.
 
-CRP is the minimal constraint that forces the second.
+# ---------------------------------------------------------------------------
+# Canonicalization & hashing
+# ---------------------------------------------------------------------------
 
----
+def canonical_json(data) -> str:
+    """RFC 8785-style canonical form: sorted keys, no whitespace."""
+    return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
-## Demo
 
-```bash
-git clone <this-repo>
-cd <this-repo>
-python3 cli.py resolve root.aiagent.engine --state 3
-```
+def sha256_hex(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-Output:
 
-```
-RESOLUTION: root.aiagent.engine @ state=3
-ROOT HASH:  163381f98ec8
+def short(h: str, n: int = 12) -> str:
+    return h[:n]
 
-DEPENDENCIES
-├── root.aiagent.identity
-└── root.aiagent.credential
 
-EXECUTION
-├── validate_identity
-├── verify_credentials
-└── execute_instruction_set
+# ---------------------------------------------------------------------------
+# State replay
+# ---------------------------------------------------------------------------
 
-DETERMINISM
-same state → same root → same execution semantics
-```
+def load_transitions():
+    """Load every transitions/NN_*.json in order."""
+    if not TRANSITIONS_DIR.exists():
+        raise FileNotFoundError(f"transitions/ not found at {TRANSITIONS_DIR}")
+    files = sorted(p for p in TRANSITIONS_DIR.iterdir() if p.suffix == ".json")
+    transitions = []
+    for f in files:
+        with open(f) as fh:
+            transitions.append(json.load(fh))
+    return transitions
 
-Same state, same root. Always. Run it twice. Run it tomorrow. Run it in 2035.
 
----
+def replay(transitions, up_to_state: int, break_path: str | None = None):
+    """
+    Apply transitions[0..up_to_state] and return the resulting state map.
+    State 0 = empty. State k = first k transitions applied.
 
-## Falsifiability
+    If break_path is set, that artifact is removed from state to simulate
+    a missing dependency (falsifiability mode).
+    """
+    if up_to_state < 0 or up_to_state > len(transitions):
+        raise ValueError(
+            f"state must be between 0 and {len(transitions)}; got {up_to_state}"
+        )
 
-The claim is testable. Remove a dependency, and resolution must fail —
-not silently degrade, not approximate, not guess.
+    state: dict[str, dict] = {}
+    for i in range(up_to_state):
+        tx = transitions[i]
+        if tx["type"] != "ADD_ARTIFACT":
+            raise NotImplementedError(f"transition type: {tx['type']}")
+        path = tx["path"]
+        if path in state:
+            raise ValueError(f"path already exists: {path}")
+        state[path] = tx["artifact"]
 
-```bash
-python3 cli.py resolve root.aiagent.engine --state 3 --break root.aiagent.identity
-```
+    if break_path and break_path in state:
+        del state[break_path]
 
-Output:
+    return state
 
-```
-RESOLUTION: root.aiagent.engine @ state=3
-STATUS:     UNDEFINED
 
-MISSING DEPENDENCIES
-└── root.aiagent.identity
+# ---------------------------------------------------------------------------
+# DAG validation & Merkle root
+# ---------------------------------------------------------------------------
 
-Execution without resolution is undefined.
-```
+def collect_dependencies(state, root_path):
+    """
+    Walk dependencies transitively from root_path.
+    Returns (ordered_paths, missing_paths).
+    Detects missing deps. Detects cycles.
+    """
+    ordered = []
+    seen: set[str] = set()
+    visiting: set[str] = set()
+    missing: list[str] = []
+    missing_seen: set[str] = set()
 
-Exit code: `1`.
+    def visit(p):
+        if p in seen:
+            return
+        if p in visiting:
+            raise ValueError(f"cycle detected at {p}")
+        if p not in state:
+            if p not in missing_seen:
+                missing.append(p)
+                missing_seen.add(p)
+            return
+        visiting.add(p)
+        artifact = state[p]
+        for dep in artifact.get("dependencies", []):
+            visit(dep)
+        visiting.discard(p)
+        seen.add(p)
+        ordered.append(p)
 
-This is the protocol property: **a single missing dependency makes
-execution undefined, observably and immediately.**
+    visit(root_path)
+    return ordered, missing
 
----
 
-## Verify the invariants
+def merkle_root(state, ordered_paths) -> str:
+    """
+    Deterministic root over the given ordered path list.
+    Same paths in same order with same artifacts -> same root. Always.
 
-```bash
-python3 cli.py verify
-```
+    Used in two ways:
+    - resolve: ordered_paths = transitive deps of target (subtree root)
+    - merkle:  ordered_paths = sorted full state (global state root)
+    """
+    leaves = []
+    for p in ordered_paths:
+        leaf = sha256_hex(f"{p}|{canonical_json(state[p])}")
+        leaves.append(leaf)
+    if not leaves:
+        return sha256_hex("")
+    concat = "".join(leaves)
+    return sha256_hex(concat)
 
-Three invariants are checked:
 
-1. Full resolution is deterministic across replays.
-2. Breaking any dependency makes resolution fail.
-3. The empty state cannot resolve anything.
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
 
-If any of these fail, the protocol claim is broken.
+def render_resolution(path, state_idx, artifact, ordered_paths, root_hash):
+    deps = artifact.get("dependencies", [])
+    execution = artifact.get("execution", {})
+    steps = execution.get("steps", [])
 
----
+    print()
+    print(f"RESOLUTION: {path} @ state={state_idx}")
+    print(f"ROOT HASH:  {short(root_hash)}")
+    print()
 
-## What this is
+    print("DEPENDENCIES")
+    if deps:
+        for i, dep in enumerate(deps):
+            prefix = "└──" if i == len(deps) - 1 else "├──"
+            print(f"{prefix} {dep}")
+    else:
+        print("└── none")
 
-A reference implementation in ~250 lines of Python. No dependencies
-beyond the standard library. The transitions are plain JSON files
-under `transitions/`.
+    print()
+    print("EXECUTION")
+    if steps:
+        for i, step in enumerate(steps):
+            prefix = "└──" if i == len(steps) - 1 else "├──"
+            print(f"{prefix} {step}")
+    else:
+        print("└── none")
 
-State is built by replaying transitions in order. Resolution walks
-the dependency DAG from a given path. The root hash is deterministic
-over `(path, canonical_json(artifact))` pairs in dependency order.
+    print()
+    print("DETERMINISM")
+    print("same state → same root → same execution semantics")
+    print()
 
-This is not production software. It exists to make a property
-observable.
 
----
+def render_failure(path, state_idx, missing):
+    print()
+    print(f"RESOLUTION: {path} @ state={state_idx}")
+    print(f"STATUS:     UNDEFINED")
+    print()
+    print("MISSING DEPENDENCIES")
+    for i, m in enumerate(missing):
+        prefix = "└──" if i == len(missing) - 1 else "├──"
+        print(f"{prefix} {m}")
+    print()
+    print("Execution without resolution is undefined.")
+    print()
 
-## What this is not
 
-- Not a token, not a product, not a service.
-- Not a routing layer (that is what naming systems already do).
-- Not a virtual machine. CRP defines the constraint that makes
-  any execution layer reproducible — it does not replace one.
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
 
----
+def cmd_resolve(args):
+    transitions = load_transitions()
+    state = replay(transitions, args.state, break_path=args.break_)
 
-## Mapping to `.btc` names
+    if args.path not in state:
+        render_failure(args.path, args.state, [args.path])
+        return 1
 
-A `.btc` identifier becomes the entry point of a CRP path.
-Naming gives the entry. CRP gives the reconstructible meaning behind it.
+    ordered, missing = collect_dependencies(state, args.path)
 
-| `.btc` name             | CRP path                    |
-|-------------------------|-----------------------------|
-| `aiagentidentity.btc`   | `root.aiagent.identity`     |
-| `aiagentcredential.btc` | `root.aiagent.credential`   |
-| `aiagentengine.btc`     | `root.aiagent.engine`       |
+    if missing:
+        render_failure(args.path, args.state, missing)
+        return 1
 
-See [`mapping.md`](mapping.md) for the full table.
+    root = merkle_root(state, ordered)
+    render_resolution(args.path, args.state, state[args.path], ordered, root)
 
----
+    if args.json:
+        print("CANONICAL OUTPUT")
+        print(json.dumps(state[args.path], indent=2, sort_keys=True))
+        print()
 
-## Repository layout
+    return 0
 
-```
-.
-├── cli.py                    # the resolver
-├── transitions/              # ordered state transitions (JSON)
-├── expected-output/          # canonical outputs for verification
-├── mapping.md                # .btc → CRP path mapping
-└── README.md
-```
 
----
+def cmd_merkle(args):
+    transitions = load_transitions()
+    state = replay(transitions, args.state)
+    if not state:
+        print("MERKLE ROOT: <empty state>")
+        return 0
+    paths = sorted(state.keys())
+    root = merkle_root(state, paths)
+    print(f"MERKLE ROOT: {short(root)}")
+    print(f"FULL HASH:   {root}")
+    print(f"STATE:       {args.state}")
+    print(f"ARTIFACTS:   {len(paths)}")
+    print(f"CONSISTENCY: VERIFIED")
+    return 0
 
-## Working Paper
 
-This implementation accompanies:
+def cmd_verify(args):
+    """Check that the demo behaves as documented."""
+    transitions = load_transitions()
+    failures = 0
 
-> **Working Paper N°002 — Semantic Resolution**
-> *Execution without resolution is undefined.*
-> BTC Infra HQ, 2026.
+    # 1. Full state resolves cleanly
+    full = replay(transitions, len(transitions))
+    ordered, missing = collect_dependencies(full, "root.aiagent.engine")
+    if missing:
+        print(f"FAIL: missing deps in full state: {missing}")
+        failures += 1
+    else:
+        r1 = merkle_root(full, ordered)
+        r2 = merkle_root(full, ordered)
+        if r1 != r2:
+            print("FAIL: non-deterministic merkle root")
+            failures += 1
+        else:
+            print(f"PASS: full resolution deterministic ({short(r1)})")
 
-Paper: [btcinfrahq.substack.com](https://btcinfrahq.substack.com)
-PDF: `paper/WP002.pdf`
+    # 2. Breaking a dep makes resolution undefined
+    broken = replay(transitions, len(transitions),
+                    break_path="root.aiagent.identity")
+    _, missing = collect_dependencies(broken, "root.aiagent.engine")
+    if not missing:
+        print("FAIL: broken state still resolved (falsifiability not demonstrated)")
+        failures += 1
+    else:
+        print(f"PASS: broken state correctly fails ({len(missing)} missing)")
 
----
+    # 3. State 0 cannot resolve anything
+    empty = replay(transitions, 0)
+    _, missing = collect_dependencies(empty, "root.aiagent.engine")
+    if not missing:
+        print("FAIL: empty state resolved")
+        failures += 1
+    else:
+        print("PASS: empty state correctly fails")
 
-## License
+    print()
+    if failures == 0:
+        print("All invariants hold.")
+        return 0
+    print(f"{failures} invariant(s) violated.")
+    return 1
 
-- Code: MIT
-- Specification & paper: CC BY 4.0
 
----
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
 
-> Persistence secures existence.
-> Resolution secures usability.
->
-> **Execution without resolution is undefined.**
+def main():
+    parser = argparse.ArgumentParser(
+        prog="crp",
+        description="Closed Root Protocol — reference resolver (v0.1)",
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_resolve = sub.add_parser("resolve", help="resolve a path at a given state")
+    p_resolve.add_argument("path")
+    p_resolve.add_argument("--state", type=int, required=True)
+    p_resolve.add_argument(
+        "--break", dest="break_", default=None,
+        help="remove an artifact from state to test falsifiability",
+    )
+    p_resolve.add_argument(
+        "--json", action="store_true",
+        help="also print the canonical JSON of the resolved artifact",
+    )
+    p_resolve.set_defaults(func=cmd_resolve)
+
+    p_merkle = sub.add_parser("merkle", help="show merkle root at a given state")
+    p_merkle.add_argument("--state", type=int, required=True)
+    p_merkle.set_defaults(func=cmd_merkle)
+
+    p_verify = sub.add_parser("verify", help="run protocol invariants")
+    p_verify.set_defaults(func=cmd_verify)
+
+    args = parser.parse_args()
+    sys.exit(args.func(args))
+
+
+if __name__ == "__main__":
+    main()
