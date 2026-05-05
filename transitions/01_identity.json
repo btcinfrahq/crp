@@ -1,0 +1,13 @@
+{
+  "type": "ADD_ARTIFACT",
+  "path": "root.aiagent.identity",
+  "artifact": {
+    "type": "agent_identity",
+    "schema": "identity_v1",
+    "dependencies": [],
+    "properties": {
+      "namespace": "aiagent",
+      "agent_type": "autonomous_financial_agent"
+    }
+  }
+}
